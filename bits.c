@@ -146,7 +146,7 @@ NOTES:
  *   Rating: 1
  */
 int signMask(void) {
-  return 1;
+  return ~(!0) + 1;
 }
 
 // P2
