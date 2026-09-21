@@ -395,5 +395,10 @@ int bitCount(int x) {
  */
 int bitReverse(int x)
 {
+
   return 19;
 }
+
+male clean
+make all
+
