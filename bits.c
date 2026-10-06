@@ -600,6 +600,3 @@ int bitReverse(int x) {
 	
 }
 
-male clean
-make all
-
