@@ -78,7 +78,7 @@ EXAMPLES OF ACCEPTABLE CODING STYLE:
    */
   int pow2plus1(int x) {
      /* exploit ability of shifts to compute powers of 2 */
-     return 1 << 31;
+     return (1 << x) + 1;
   }
 
   /*
@@ -146,7 +146,7 @@ NOTES:
  *   Rating: 1
  */
 int signMask(void) {
-	return ~(!0) + 1;
+	return 1 << 31;
 }
 
 // P2
