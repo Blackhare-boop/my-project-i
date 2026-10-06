@@ -263,8 +263,11 @@ int oddParity(int x) {
  *   Rating: 5
  */
 int rotateRightBits(int x, int n) {
-	int shift = n & 31;
-    return (x >> shift) | (x << ((32 + (~shift + 1)) & 31));
+	n = n & 31;
+    int left = (32 + ~n + 1) & 31;   // 计算左移量，避免移位32位
+    int right = x >> n;              // 算术右移，可能补1
+    int mask = ~(((1 << 31) >> n) << 1); // 构造掩码，清除算术右移补的1
+    return (right & mask) | (x << left);
 }
 
 // P10
@@ -279,13 +282,25 @@ int rotateRightBits(int x, int n) {
  *   Rating: 5
  */
 int roundEvenPow2(int x, int n) {
-	int mask = (1 << n) + ~0;               
-    int half = 1 << (n + ~0);               
-    int rem = x & mask;                     
-    int isHalf = !(rem ^ half);            
-    int isEven = !((x >> n) & 1);           
-    int add = half & ~(isHalf & isEven);    
-    return (x + add) & ~mask;               
+	int mask = (1 << n) + ~0;
+    int half = 1 << (n + ~0);
+    int rem = x & mask;
+    int down = x & ~mask;
+    int up = (x + half) & ~mask;
+
+    // 判断是否需要向上舍入
+    // 条件1：rem > half  ->  diff > 0
+    int diff = rem + ~half + 1;
+    int gtHalf = !!(diff & ~(diff >> 31));  // 1 if diff > 0, else 0
+    // 条件2：rem == half 且 up>>n 是偶数
+    int isHalf = !diff;
+    int upEven = !((up >> n) & 1);
+    int useUp = gtHalf | (isHalf & upEven); // 1 或 0
+
+    // 把 useUp 变成全 1 或全 0 的掩码
+    int chooseUp = ~useUp + 1;  // 0 -> 0, 1 -> 0xFFFFFFFF
+
+    return (up & chooseUp) | (down & ~chooseUp);           
 }
 
 // P11
@@ -301,8 +316,18 @@ int roundEvenPow2(int x, int n) {
  *   Rating: 5
  */
 int midpointTowardFirst(int x, int y) {
-	int avg = (x & y) + ((x ^ y) >> 1);     
-    int roundUp = (x & 1) & (x ^ y);        
+	int avg = (x & y) + ((x ^ y) >> 1);      // 无溢出平均
+    int lost = (x ^ y) & 1;                  // 奇偶不同（中点）
+
+    // 判断 x > y，避免溢出
+    int sign_x = x >> 31;
+    int sign_y = y >> 31;
+    int diff = x + ~y + 1;
+    int sign_diff = diff >> 31;
+    // x > y 的条件：x 正 y 负，或 同号且 diff > 0
+    int x_gt_y = (~sign_x & sign_y) | (~(sign_x ^ sign_y) & ~sign_diff & !!diff);
+
+    int roundUp = lost & x_gt_y;
     return avg + roundUp;
 }
 
@@ -317,13 +342,37 @@ int midpointTowardFirst(int x, int y) {
  *   Rating: 7
  */
 int isBetweenEitherOrder(int x, int a, int b) {
-	int ge_xa = !((x + ~a + 1) >> 31);      
-    int ge_bx = !((b + ~x + 1) >> 31);      
-    int ge_xb = !((x + ~b + 1) >> 31);      
-    int ge_ax = !((a + ~x + 1) >> 31);      
-    int in_ab = ge_xa & ge_bx;              
-    int in_ba = ge_xb & ge_ax;              
-    return !(!in_ab & !in_ba);              
+	// 1. Safe comparison: a < b without overflow
+    int sa = a >> 31;
+    int sb = b >> 31;
+    int same_sign = ~(sa ^ sb);
+    int diff_ab = a + ~b + 1;
+    int sdiff_ab = diff_ab >> 31;
+
+    // If same sign, use subtraction result; if different signs, a is less than b if a is negative (sa)
+    int mask = (same_sign & sdiff_ab) | (~same_sign & sa);
+
+    // 2. Determine min and max
+    int min = (a & mask) | (b & ~mask);
+    int max = (b & mask) | (a & ~mask);
+
+    // 3. Check x >= min (overflow-safe comparison)
+    int sx = x >> 31;
+    int smin = min >> 31;
+    int diff_min = x + ~min + 1;
+    int sdiff_min = diff_min >> 31;
+    int same_sign_min = ~(sx ^ smin);
+    int x_ge_min = (same_sign_min & ~sdiff_min) | (~same_sign_min & ~sx);
+
+    // 4. Check max >= x (overflow-safe comparison)
+    int smax = max >> 31;
+    int diff_max = max + ~x + 1;
+    int sdiff_max = diff_max >> 31;
+    int same_sign_max = ~(smax ^ sx);
+    int max_ge_x = (same_sign_max & ~sdiff_max) | (~same_sign_max & ~smax);
+
+    // 5. Combine and convert to 0 or 1
+    return !!(x_ge_min & max_ge_x);              
 }
 
 // P13
@@ -336,14 +385,31 @@ int isBetweenEitherOrder(int x, int a, int b) {
  *   Rating: 7
  */
 int mul5Sat(int x) {
-	int mul5 = (x << 2) + x;                
-    int sign_x = x >> 31;                  
-    int sign_mul = mul5 >> 31;              
-    int pos_ovf = ~sign_x & sign_mul;
-    int neg_ovf = sign_x & ~sign_mul;
-    int sat_pos = 0x7FFFFFFF & pos_ovf;
-    int sat_neg = 0x80000000 & neg_ovf;
+	int mul5 = (x << 2) + x;
+    int sign_x = x >> 31;
+
+    // x*5 不溢出的正负边界
+    int lim_pos = 0x19999999;           // INT_MAX / 5
+    int lim_neg = ~0x19999999 + 1;      // INT_MIN / 5 (-0x19999999)
+
+    // 正溢出检测：x > lim_pos
+    int pos_check = (x + ~lim_pos) >> 31; // x <= lim_pos 时为 -1，x > lim_pos 时为 0
+    int pos_ovf = ~pos_check & ~sign_x;
+
+    // 负溢出检测：x < lim_neg
+    int neg_check = (x + ~lim_neg + 1) >> 31; // x < lim_neg 时为 -1，x >= lim_neg 时为 0
+    int neg_ovf = neg_check & sign_x;
+
+    int tmin = 1 << 31;
+    int tmax = ~tmin;
+
+    // 无溢出掩码
     int no_ovf_mask = ~(pos_ovf | neg_ovf);
+
+    // 组合结果
+    int sat_pos = tmax & pos_ovf;
+    int sat_neg = tmin & neg_ovf;
+
     return (mul5 & no_ovf_mask) | sat_pos | sat_neg;
 }
 
@@ -357,20 +423,28 @@ int mul5Sat(int x) {
  *   Rating: 7
  */
 int classifyAdd3(int x, int y, int z) {
-	int sum1 = x + y;                          
-    int sign_x = x >> 31;                      
-    int sign_y = y >> 31;                      
-    int sign_z = z >> 31;                      
-    int sign_sum1 = sum1 >> 31;                
-    int pos_ovf1 = ~sign_x & ~sign_y & sign_sum1;   
-    int neg_ovf1 = sign_x & sign_y & ~sign_sum1;    
-    int sum2 = sum1 + z;                       
-    int sign_sum2 = sum2 >> 31;               
-    int pos_ovf2 = ~sign_sum1 & ~sign_z & sign_sum2;   
-    int neg_ovf2 = sign_sum1 & sign_z & ~sign_sum2;    
+	int sum1 = x + y;
+    int sign_x = x >> 31;
+    int sign_y = y >> 31;
+    int sign_z = z >> 31;
+    int sign_sum1 = sum1 >> 31;
+
+    // 第一步溢出检测 (x + y)
+    int pos_ovf1 = ~sign_x & ~sign_y & sign_sum1;
+    int neg_ovf1 = sign_x & sign_y & ~sign_sum1;
+
+    int sum2 = sum1 + z;
+    int sign_sum2 = sum2 >> 31;
+
+    // 第二步溢出检测 (sum1 + z)
+    int pos_ovf2 = ~sign_sum1 & ~sign_z & sign_sum2;
+    int neg_ovf2 = sign_sum1 & sign_z & ~sign_sum2;
+
     int any_pos_ovf = pos_ovf1 | pos_ovf2;
     int any_neg_ovf = neg_ovf1 | neg_ovf2;
-    return (any_pos_ovf & 1) | (any_neg_ovf & -1);
+
+    // 使用加法组合结果，避免按位或导致的 1 | -1 = -1 问题
+    return (any_pos_ovf & 1) + (any_neg_ovf & -1);
 }
 
 // P15
@@ -390,35 +464,58 @@ unsigned floatScaleThreeHalves(unsigned uf) {
 	unsigned sign = uf >> 31;
     unsigned exp = (uf >> 23) & 0xFF;
     unsigned frac = uf & 0x7FFFFF;
-    if (exp == 0xFF) {
-        return uf;
-    }
-    if (exp == 0 && frac == 0) {
-        return uf;
-    }
-    unsigned abs_uf = uf & 0x7FFFFFFF;
 
+    // 处理 NaN 和无穷大
+    if (exp == 0xFF) return uf;
+    // 处理 +0 和 -0
+    if (exp == 0 && frac == 0) return uf;
+
+    // 处理非规格化数 (exp == 0)
     if (exp == 0) {
-        while (!(frac & 0x800000)) {
-            frac <<= 1;
-            exp--;
+        unsigned temp = frac * 3;
+        unsigned new_frac = temp >> 1;
+        unsigned remainder = temp & 1;
+
+        // 向偶数舍入
+        if (remainder && (new_frac & 1)) {
+            new_frac++;
+        }
+
+        // 检查进位
+        if (new_frac & 0x800000) {
+            exp = 1;
+            new_frac &= 0x7FFFFF;
+        }
+        return (sign << 31) | (exp << 23) | new_frac;
+    }
+
+    // 处理规格化数 (exp != 0)
+    unsigned m = 0x800000 | frac;
+    unsigned temp = m * 3;
+    unsigned new_m = temp >> 1;
+    unsigned remainder = temp & 1;
+
+    // 向偶数舍入
+    if (remainder && (new_m & 1)) {
+        new_m++;
+    }
+	// 检查是否溢出到高位（进位到阶码）
+    if (new_m & 0x1000000) {
+        remainder = new_m & 1;
+        new_m >>= 1;
+        if (remainder && (new_m & 1)) {
+            new_m++;
         }
         exp++;
-        frac &= 0x7FFFFF; 
     }
 
-
-    unsigned frac_half = (frac >> 1) | (0x400000); 
-    unsigned frac_sum = frac + frac_half; 
-    if (frac_sum & 0x800000) {
-        frac_sum >>= 1;
-        exp++;
-    } else {
-        frac_sum &= 0x7FFFFF; 
+    // 处理阶码溢出为无穷大
+    if (exp >= 0xFF) {
+        return (sign << 31) | 0x7F800000;
     }
 
-    unsigned result = (sign << 31) | (exp << 23) | frac_sum;
-    return result;
+    unsigned new_frac = new_m & 0x7FFFFF;
+    return (sign << 31) | (exp << 23) | new_frac;
 }
 
 // P16
@@ -438,34 +535,35 @@ unsigned floatRoundEven(unsigned uf) {
     unsigned exp = (uf >> 23) & 0xFF;
     unsigned frac = uf & 0x7FFFFF;
 
+    // 1. NaN 或 Infinity 直接返回
     if (exp == 0xFF) {
         return uf;
     }
 
+    // 2. 绝对值小于 1.0 (exp < 127)
     if (exp < 127) {
         if (exp < 126) {
             return sign << 31;
         }
-
         if (exp == 126 && frac == 0) {
             return sign << 31;
-        } else {
-
-            return (sign << 31) | (127 << 23);
         }
+        return (sign << 31) | (127 << 23); // 四舍五入到 1.0 或 -1.0
     }
 
     int shift = 23 - (exp - 127);
     if (shift <= 0) {
-
-        return uf;
+        return uf; // 整数范围太大，没有小数位需要舍入
     }
 
-    unsigned int_part = frac >> shift;
-    unsigned frac_part = frac & ((1 << shift) - 1);
-    unsigned half = 1 << (shift - 1); 
+    // 3. 包含隐含的 leading 1 计算完整的尾数/整数值
+    unsigned full_frac = (1 << 23) | frac;
+    unsigned int_part = full_frac >> shift;
+    unsigned mask = (shift >= 32) ? 0xFFFFFFFF : ((1U << shift) - 1);
+    unsigned frac_part = full_frac & mask;
+    unsigned half = 1U << (shift - 1);
 
-    unsigned round_up = 0;
+	unsigned round_up = 0;
     if (frac_part > half) {
         round_up = 1;
     } else if (frac_part == half) {
@@ -474,16 +572,33 @@ unsigned floatRoundEven(unsigned uf) {
         }
     }
 
-    unsigned result_frac = int_part + round_up;
-    unsigned result_exp = exp;
-
-
-    if (result_frac & 0x800000) {
-        result_frac >>= 1;
-        result_exp++;
+    unsigned rounded_val = int_part + round_up;
+    if (rounded_val == 0) {
+        return sign << 31;
     }
 
-    return (sign << 31) | (result_exp << 23) | (result_frac & 0x7FFFFF);
+    // 4. 将舍入后的整数重新转换为浮点数表示
+    unsigned temp = rounded_val;
+    unsigned msb = 0;
+    while (temp > 1) {
+        temp >>= 1;
+        msb++;
+    }
+
+    unsigned res_exp = 127 + msb;
+    unsigned res_frac;
+    if (msb >= 23) {
+        res_frac = (rounded_val >> (msb - 23)) & 0x7FFFFF;
+    } else {
+        res_frac = (rounded_val << (23 - msb)) & 0x7FFFFF;
+    }
+
+    // 5. 检查指数溢出（变为 Infinity）
+    if (res_exp >= 0xFF) {
+        return (sign << 31) | (0xFF << 23);
+    }
+
+    return (sign << 31) | (res_exp << 23) | res_frac;
 }
 
 // P17
